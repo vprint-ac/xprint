@@ -64,7 +64,7 @@ describe("layoutPrintout", () => {
     ["layout.cpp", "hydro-layout-bw.pdf", false],
     ["long-lines.cpp", "hydro-long-lines-color.pdf", true],
   ] as const) {
-    test(`${sample} matches the upstream Hydro reference page for page`, async () => {
+    test(`${sample} matches the Hydro layout with the printed credit removed on every page`, async () => {
       const { pdf } = await layoutPrintout({
         filename: sample,
         text: new TextDecoder().decode(await fixture(sample)),
@@ -73,6 +73,7 @@ describe("layoutPrintout", () => {
         team: "校队",
         seat: "007",
       });
+      expect(pdfText(pdf)).not.toContain("Hydro/XCPC-TOOLS");
       expect(rasterHashes(pdf)).toEqual(rasterHashes(await fixture(reference)));
     });
   }

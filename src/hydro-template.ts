@@ -57,7 +57,7 @@ export function generateTypst(
       #linebreak()
       filename: #original
       #h(1fr)
-      By Hydro/XCPC-TOOLS | Page #context counter(page).display("1 of 1", both: true)
+      Page #context counter(page).display("1 of 1", both: true)
     ],
   )
   show raw.where(block: true): code => {

@@ -76,7 +76,8 @@ try {
   const compiler = await createTypstCompiler();
   mkdirSync(resolve(values.out), { recursive: true });
   for (const fixture of fixtures) {
-    compiler.addSource("/main.typst", generateTypst("校队", "007", "source", fixture.source, "cpp", fixedTime, fixture.color));
+    const template = generateTypst("校队", "007", "source", fixture.source, "cpp", fixedTime, fixture.color);
+    compiler.addSource("/main.typst", template.replace("By Hydro/XCPC-TOOLS | Page #context", "Page #context"));
     compiler.addSource("/source", await Bun.file(join(here, fixture.source)).text());
     const pdf = await compiler.compile({ format: "pdf", mainFilePath: "/main.typst" });
     const output = join(resolve(values.out), fixture.pdf);
