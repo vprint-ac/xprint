@@ -40,7 +40,7 @@ pwsh ./windows/fetch-sumatra.ps1 -Destination dist/sumatra
 `.github/workflows/release.yml` 在 `linux-x64`、`macos-arm64`、`windows-x64` 三个原生 runner 上分别执行：
 
 1. 安装 Bun 1.4.5 和原生测试依赖（Poppler；Windows 另需 Tesseract）。
-2. Linux 和 macOS 运行 `bun run check`、`bun test` 和打包测试。`bun test` 用 `#!/bin/sh` 伪造 `lp`/`lpstat` 并依赖 Python 的 `pty`，因此 Windows 只运行 `bun run check` 和打包测试。
+2. 三个平台都运行类型检查、Bun 测试和 Python 打包测试。Windows 运行可移植的输入、配置和 PDF 测试。需要 POSIX 伪队列或 PTY 的用例在 Linux 和 macOS 上运行。
 3. 用 `scripts/package.py` 打包，Windows 先用 `windows/fetch-sumatra.ps1` 下载并验证 SumatraPDF。
 4. 用 Python `hashlib` 核对压缩包的 `SHA256SUMS` 条目和 `.zip.sha256` 后上传 `xprint-<目标>` 构件。
 5. 在独立的 **playback** 作业里重新下载该构件、再次核对校验和，解压后运行验收脚本。构建目录中的程序不参与 playback。Windows 在运行 `windows/acceptance.ps1` 前先确认 Print Spooler 已启动、Microsoft Print to PDF 驱动存在，缺少时输出 runner 上的服务与驱动列表作为诊断。

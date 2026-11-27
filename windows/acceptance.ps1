@@ -235,13 +235,12 @@ try {
   Assert-That ($missingQueueResult.Output -match 'Print Spooler|不存在') 'the missing queue error is actionable'
   Assert-That (-not (Test-Path -LiteralPath $outputPdfChinese)) 'no job reached the virtual printer for the missing queue case'
 
-  # The queue is set at the contest root; the color request is inherited from a
-  # question subdirectory, so this also exercises the nearest-config lookup.
+  # A problem subdirectory inherits both settings from the nearest contest file.
   $chineseRoot = New-ContestDirectory -Name 'chinese-queue' -Printer $chineseQueueName
   $chineseQuestion = Join-Path $chineseRoot 'question-1'
   New-Item -ItemType Directory -Force -Path $chineseQuestion | Out-Null
   Copy-Item -LiteralPath $layoutSource -Destination (Join-Path $chineseQuestion 'layout.cpp')
-  Set-Content -LiteralPath (Join-Path $chineseQuestion '.xprint.yaml') -Encoding UTF8 -Value 'color: color'
+  Add-Content -LiteralPath (Join-Path $chineseRoot '.xprint.yaml') -Encoding UTF8 -Value 'color: color'
   $chineseResult = Invoke-Xprint -Directory $chineseQuestion -Arguments @('-y', 'layout.cpp')
   Write-Host $chineseResult.Output
   Assert-That ($chineseResult.ExitCode -eq 0) "Chinese queue submission exits 0 (got $($chineseResult.ExitCode))"
