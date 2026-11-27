@@ -75,18 +75,31 @@ function New-ContestDirectory {
   return $directory
 }
 
-function Wait-ForFile {
-  param([string]$Path)
-  $deadline = (Get-Date).AddSeconds(30)
-  while ((Get-Date) -lt $deadline -and -not (Test-Path -LiteralPath $Path -PathType Leaf)) {
-    Start-Sleep -Milliseconds 200
-  }
-  if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) { throw "timed out waiting for $Path" }
-  $last = -1
+# EndDoc can return while the spooler still owns an empty output file.
+function Wait-ForPdf {
+  param([string]$Path, [string]$Queue)
+  $deadline = (Get-Date).AddMinutes(3)
   do {
-    $last = (Get-Item -LiteralPath $Path).Length
-    Start-Sleep -Milliseconds 500
-  } while ((Get-Item -LiteralPath $Path).Length -ne $last)
+    try {
+      $stream = [IO.File]::Open($Path, 'Open', 'Read', 'Read')
+      try {
+        if ($stream.Length -ge 5) {
+          $length = [int][Math]::Min(1024L, $stream.Length)
+          $null = $stream.Seek(-$length, [IO.SeekOrigin]::End)
+          $tail = [byte[]]::new($length)
+          $read = $stream.Read($tail, 0, $length)
+          if ([Text.Encoding]::ASCII.GetString($tail, 0, $read) -match '%%EOF\s*\z') { return }
+        }
+      } finally {
+        $stream.Dispose()
+      }
+    } catch [IO.IOException] {
+      # The spooler has yet to create or close this output.
+    }
+    Start-Sleep -Milliseconds 400
+  } while ((Get-Date) -lt $deadline)
+  $jobs = Get-PrintJob -PrinterName $Queue | Select-Object ID,JobStatus | Out-String
+  throw "Timed out waiting for a complete PDF at $Path from $Queue. Jobs: $jobs"
 }
 
 function Get-DefaultPrinterName {
@@ -205,7 +218,7 @@ try {
   Assert-That ($defaultResult.Output -match '已提交到') 'xprint reports that the job was submitted'
   Assert-That ($defaultResult.Output -match [regex]::Escape($defaultQueueName)) "xprint resolved the temporary queue $defaultQueueName"
   Assert-That ($defaultResult.Output -match '（黑白）') 'the default queue job is requested in monochrome'
-  Wait-ForFile $outputPdf
+  Wait-ForPdf $outputPdf $defaultQueueName
   Assert-PdfOutput -Path $outputPdf -ExpectedPages 7 -Marker $lastLineMarker -EvidencePrefix (Join-Path $WorkDir "evidence-$token")
   # The default job is finished. Later submissions must write their own spool
   # file and leave this one untouched.
@@ -235,7 +248,7 @@ try {
   Assert-That ($chineseResult.Output -match '已提交到') 'the Chinese queue submission reports success'
   Assert-That ($chineseResult.Output -match [regex]::Escape($chineseQueueName)) "the receipt names the Chinese queue $chineseQueueName"
   Assert-That ($chineseResult.Output -match '（彩色）') 'the inherited contest config requests color'
-  Wait-ForFile $outputPdfChinese
+  Wait-ForPdf $outputPdfChinese $chineseQueueName
   Assert-PdfOutput -Path $outputPdfChinese -ExpectedPages 7 -Marker $lastLineMarker -EvidencePrefix (Join-Path $WorkDir "evidence-$token-chinese")
   Assert-That ((Get-FileHash $outputPdf -Algorithm SHA256).Hash -eq $defaultOutputHash) 'the default queue spool file is unchanged after the Chinese queue job'
 
@@ -274,7 +287,13 @@ try {
   } catch { $cleanupErrors.Add("restoring the default printer failed: $($_.Exception.Message)") }
   foreach ($name in $createdQueues) {
     try {
+      # These randomly named queues were created by this invocation.
+      Get-PrintJob -PrinterName $name -ErrorAction SilentlyContinue | Remove-PrintJob -ErrorAction SilentlyContinue
       Remove-Printer -Name $name -ErrorAction Stop
+      $deadline = (Get-Date).AddSeconds(20)
+      while ((Get-Printer -Name $name -ErrorAction SilentlyContinue) -and (Get-Date) -lt $deadline) {
+        Start-Sleep -Milliseconds 250
+      }
       Assert-That ($null -eq (Get-Printer -Name $name -ErrorAction SilentlyContinue)) "temporary queue $name removed"
     } catch { $cleanupErrors.Add($_.Exception.Message) }
   }

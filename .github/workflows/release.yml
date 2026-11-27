@@ -46,29 +46,7 @@ jobs:
       - name: Install native test dependencies (Windows)
         if: matrix.target == 'windows-x64'
         shell: pwsh
-        run: choco install poppler tesseract python --no-progress -y
-
-      # Chocolatey shims and Poppler's Library/bin are not on PATH in the current
-      # step after install; resolve the real executables and prepend them.
-      - name: Resolve native tool paths (Windows)
-        if: matrix.target == 'windows-x64'
-        shell: pwsh
-        run: |
-          $tools = @{}
-          foreach ($name in 'pdfinfo', 'pdftoppm', 'tesseract', 'python') {
-            $command = Get-Command $name -ErrorAction SilentlyContinue
-            if (-not $command) {
-              $pattern = switch ($name) { 'python' { 'python.exe' } default { "$name.exe" } }
-              $hit = Get-ChildItem -Path 'C:\Program Files', "$env:ChocolateyInstall\lib", "$env:ProgramData\chocolatey\lib" -Recurse -Filter $pattern -ErrorAction SilentlyContinue | Select-Object -First 1
-              if ($hit) { $command = Get-Item $hit.FullName }
-            }
-            if (-not $command) { throw "cannot resolve $name after choco install" }
-            $tools[$name] = $command.Source ?? $command.FullName
-            Write-Host "$name -> $($tools[$name])"
-          }
-          $binDirs = $tools.Values | ForEach-Object { Split-Path $_ } | Select-Object -Unique
-          $env:PATH = (($binDirs -join ';') + ';' + $env:PATH)
-          "PATH=$env:PATH" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+        run: choco install poppler --no-progress -y
 
       - run: bun install --frozen-lockfile
 
@@ -234,26 +212,13 @@ jobs:
           $root = (Get-ChildItem 'playback\xprint-*-windows-x64' -Directory | Select-Object -First 1).FullName
           $xprint = Join-Path $root 'xprint.exe'
           $sumatra = Join-Path $root 'SumatraPDF-3.6.1-64.exe'
-          $rulePrefix = 'xprint-acceptance-offline'
-          $existing = @(Get-NetFirewallRule -DisplayName "$rulePrefix-*" -ErrorAction SilentlyContinue)
-          if ($existing.Count) { $existing | Remove-NetFirewallRule }
+          $rulePrefix = "xprint-offline-$([guid]::NewGuid())"
           try {
             foreach ($exe in $xprint, $sumatra) {
               New-NetFirewallRule -DisplayName "$rulePrefix-$([System.IO.Path]::GetFileName($exe))" -Direction Outbound -Program $exe -Action Block -Profile Any | Out-Null
             }
-            $tools = @{}
-            foreach ($name in 'pdfinfo', 'pdftoppm', 'tesseract') {
-              $command = Get-Command $name -ErrorAction SilentlyContinue
-              if (-not $command) {
-                $pattern = "$name.exe"
-                $hit = Get-ChildItem -Path 'C:\Program Files', "$env:ChocolateyInstall\lib", "$env:ProgramData\chocolatey\lib" -Recurse -Filter $pattern -ErrorAction SilentlyContinue | Select-Object -First 1
-                if ($hit) { $command = Get-Item $hit.FullName }
-              }
-              if (-not $command) { throw "cannot resolve $name; install poppler and tesseract first" }
-              $tools[$name] = $command.Source ?? $command.FullName
-            }
-            $binDirs = $tools.Values | ForEach-Object { Split-Path $_ } | Select-Object -Unique
-            $env:PATH = (($binDirs -join ';') + ';' + $env:PATH)
+            $env:PATH = "$(Join-Path $env:ProgramFiles 'Tesseract-OCR');$env:PATH"
+            Get-Command pdfinfo,pdftoppm,tesseract -ErrorAction Stop | Out-Null
             ./windows/acceptance.ps1 -Xprint $xprint -WorkDir "$env:RUNNER_TEMP\xprint-acceptance"
           } finally {
             Get-NetFirewallRule -DisplayName "$rulePrefix-*" -ErrorAction SilentlyContinue | Remove-NetFirewallRule
@@ -264,8 +229,10 @@ jobs:
         with:
           name: xprint-${{ matrix.target }}-evidence
           path: |
-            evidence/
+            evidence/*.pdf
+            evidence/*.txt
             ${{ runner.temp }}/xprint-acceptance/**/*.pdf
+            ${{ runner.temp }}/xprint-acceptance/evidence-*.png
           if-no-files-found: ignore
           retention-days: 14
 
