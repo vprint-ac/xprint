@@ -1,0 +1,10 @@
+{
+  "version": "3.6.1",
+  "url": "https://www.sumatrapdfreader.org/dl/rel/3.6.1/SumatraPDF-3.6.1-64.zip",
+  "sha256": "98b33a518d42986856d225064b0cd2d3643ecf78cbf84ab873d26cc51877a544",
+  "exe": "SumatraPDF-3.6.1-64.exe",
+  "exeSha256": "719f689b34f47be8ca105ce8484948474dafde0e106bab599e4a89326070c3d0",
+  "signer": "Krzysztof Kowalczyk",
+  "license": "GPL-3.0",
+  "source": "https://github.com/sumatrapdfreader/sumatrapdf/releases/tag/3.6.1rel"
+}

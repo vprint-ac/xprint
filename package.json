@@ -1,0 +1,27 @@
+{
+  "name": "xprint",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "check": "tsc -p tsconfig.json",
+    "test": "bun test tests/",
+    "build": "bun build src/index.ts --compile --no-compile-autoload-dotenv --no-compile-autoload-bunfig --outfile dist/xprint"
+  },
+  "dependencies": {
+    "@expo-google-fonts/noto-sans-sc": "0.4.3",
+    "@myriaddreamin/typst-ts-web-compiler": "0.6.1-rc5",
+    "dejavu-fonts-ttf": "2.37.3",
+    "yaml": "2.8.1",
+    "commander": "14.0.3",
+    "@clack/core": "1.6.0",
+    "@clack/prompts": "1.9.0"
+  },
+  "devDependencies": {
+    "@types/bun": "1.4.5",
+    "@types/node": "22.19.0",
+    "typescript": "5.9.3"
+  },
+  "license": "AGPL-3.0-only",
+  "packageManager": "bun@1.4.5"
+}
