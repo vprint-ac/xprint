@@ -1,0 +1,6 @@
+node_modules/
+dist/
+windows/bin/
+*.pdf
+!tests/fixtures/*.pdf
+__pycache__/
