@@ -34,8 +34,9 @@ BUN_TARGETS = {
     "windows-x64": "bun-windows-x64",
 }
 EXECUTABLE_NAMES = {"linux-x64": "xprint", "macos-arm64": "xprint", "windows-x64": "xprint.exe"}
-REQUIRED_DOCUMENTS = ("README.md", "THIRD_PARTY_LICENSES.md")
-OPTIONAL_DOCUMENTS = ("LICENSE", "DESIGN.md", "GLOSSARY.md")
+# LICENSE is required: every archive must carry the project's own license.
+REQUIRED_DOCUMENTS = ("README.md", "LICENSE", "THIRD_PARTY_LICENSES.md")
+OPTIONAL_DOCUMENTS = ("DESIGN.md", "GLOSSARY.md", "docs/acceptance.md")
 WINDOWS_DOCUMENTS = ("windows/README.md", "windows/sumatra.json", "windows/fetch-sumatra.ps1")
 # Fixed timestamps keep archives byte-for-byte reproducible when inputs change
 # only in mtime. 2026-11-27 is the xprint 0.1.0 packaging date.
@@ -157,7 +158,7 @@ def package_target(target: str, args: argparse.Namespace, manifest: dict, versio
 
     write_archive(archive, payload, name)
     digest = sha256(archive)
-    archive.with_name(archive.name + ".sha256").write_text(f"{digest}  {archive.name}\n", encoding="utf-8")
+    archive.with_name(archive.name + ".sha256").write_bytes(f"{digest}  {archive.name}\n".encode("utf-8"))
     print(f"{archive.name}  sha256={digest}", flush=True)
 
 
@@ -166,7 +167,7 @@ def write_checksums(out: Path) -> None:
         f"{sha256(path)}  {path.name}\n"
         for path in sorted(out.glob("xprint-*.zip"), key=lambda entry: entry.name)
     ]
-    (out / "SHA256SUMS").write_text("".join(lines), encoding="utf-8")
+    (out / "SHA256SUMS").write_bytes("".join(lines).encode("utf-8"))
 
 
 def main(argv: list[str]) -> None:

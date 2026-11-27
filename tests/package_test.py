@@ -2,8 +2,8 @@
 
 import hashlib
 import json
-import os
 from pathlib import Path
+import shutil
 import stat
 import subprocess
 import sys
@@ -37,7 +37,7 @@ def run_helper(*args, cwd=None):
 class PackageTests(unittest.TestCase):
     def setUp(self):
         self.work = Path(tempfile.mkdtemp(prefix="xprint-package-"))
-        self.addCleanup(lambda: subprocess.run(["rm", "-rf", str(self.work)]))
+        self.addCleanup(shutil.rmtree, self.work, ignore_errors=True)
         self.manifest = self.work / "sumatra.json"
         self.manifest.write_text(json.dumps(PINNED_SUMATRA))
         # A minimal self-contained checkout so the test does not depend on which
@@ -48,6 +48,7 @@ class PackageTests(unittest.TestCase):
         self.write("LICENSE", "AGPL-3.0\n")
         self.write("DESIGN.md", "# design\n")
         self.write("GLOSSARY.md", "# glossary\n")
+        self.write("docs/acceptance.md", "# acceptance\n")
         self.write("THIRD_PARTY_LICENSES.md", "# third party\n")
         self.write("licenses/typst.ts-APACHE-2.0.txt", "Apache-2.0\n")
         self.write("licenses/sumatrapdf-GPL-3.0.txt", "GPL-3.0\n")
@@ -100,6 +101,7 @@ class PackageTests(unittest.TestCase):
                 "LICENSE",
                 "DESIGN.md",
                 "GLOSSARY.md",
+                "docs/acceptance.md",
                 "THIRD_PARTY_LICENSES.md",
                 "licenses/typst.ts-APACHE-2.0.txt",
                 "licenses/sumatrapdf-GPL-3.0.txt",
@@ -114,6 +116,19 @@ class PackageTests(unittest.TestCase):
             )
             for info in package.infolist():
                 self.assertEqual(info.date_time, (2026, 11, 27, 0, 0, 0))
+
+    def test_missing_license_fails_validation_before_output_is_created(self):
+        binary = self.work / "xprint"
+        binary.write_text("#!/bin/sh\necho precompiled\n")
+        binary.chmod(0o755)
+        (self.root / "LICENSE").unlink()
+
+        out = self.work / "release"
+        result = self.package("linux-x64", binary, out=out)
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("LICENSE", result.stderr)
+        self.assertFalse(out.exists())
 
     def test_windows_requires_a_sumatra_executable_matching_the_manifest(self):
         binary_dir = self.work / "input"

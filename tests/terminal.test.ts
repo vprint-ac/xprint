@@ -1,29 +1,40 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { spawn, spawnSync } from "node:child_process";
-import { chmod, mkdtemp, readFile, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { pdfText } from "./support/poppler.ts";
 
 const bun = process.execPath;
 const testsDir = fileURLToPath(new URL(".", import.meta.url));
 const root = fileURLToPath(new URL("..", import.meta.url));
+const posix = process.platform !== "win32";
 let binary: string;
 let work: string;
+let isolatedHome: string;
+let isolatedConfig: string;
 
 beforeAll(async () => {
+  if (!posix) return;
   work = await mkdtemp(join(tmpdir(), "xprint-pty-"));
   binary = join(work, "xprint");
-  const build = spawnSync(bun, ["build", "src/index.ts", "--compile", "--outfile", binary], { cwd: root, encoding: "utf8" });
+  isolatedHome = join(work, "home");
+  isolatedConfig = join(work, "xdg-config");
+  await mkdir(isolatedHome);
+  await mkdir(isolatedConfig);
+  const build = spawnSync(bun, ["build", "src/index.ts", "--compile", "--no-compile-autoload-dotenv", "--no-compile-autoload-bunfig", "--outfile", binary], { cwd: root, encoding: "utf8" });
   if (build.status !== 0) throw new Error(build.stderr);
 });
 
 afterAll(async () => {
+  if (!posix) return;
   await Bun.$`rm -rf ${work}`;
 });
 
 async function fakeLp(response: string, capturePath: string) {
-  const dir = await mkdtemp(join(tmpdir(), "xprint-pty-bin-"));
+  const dir = join(work, "bin");
+  await mkdir(dir, { recursive: true });
   const lp = join(dir, "lp");
   await writeFile(lp, `#!/bin/sh\ncat > "${capturePath}"\necho "${response}"\n`);
   await chmod(lp, 0o755);
@@ -64,15 +75,22 @@ function invokePty(args: string[], cwd: string, env: Record<string, string>, key
 }
 
 async function fixture(content = "int main(){}\n") {
-  const dir = await mkdtemp(join(tmpdir(), "xprint-pty-contest-"));
+  const dir = join(work, `contest-${crypto.randomUUID()}`);
+  await mkdir(dir);
   const capture = join(dir, "captured.pdf");
   const binDir = await fakeLp("request id is HP_LaserJet-42 (1 file(s))", capture);
   const source = join(dir, "A.cpp");
   await writeFile(source, content);
-  return { dir, capture, source, env: { PATH: `${binDir}:${process.env.PATH}` } };
+  return {
+    dir,
+    capture,
+    source,
+    env: { PATH: `${binDir}:${process.env.PATH}`, HOME: isolatedHome, XDG_CONFIG_HOME: isolatedConfig },
+  };
 }
 
-describe("interactive confirmation over a real PTY", () => {
+// The Python PTY driver imports fcntl, pty and termios, which are POSIX-only.
+describe.skipIf(!posix)("interactive confirmation over a real PTY", () => {
   test.each(["\r", "y", "Y"])("confirmation %j submits one job with its id", async key => {
     const { dir, capture, env } = await fixture();
     const result = await invokePty(["A.cpp"], dir, env, [key]);
@@ -102,7 +120,7 @@ describe("interactive confirmation over a real PTY", () => {
     const result = await invokePty(["A.cpp"], dir, env, ["\r"], `printf 'int edited_after_prompt;\\n' > "${source}"`);
     expect(result.status).toBe(0);
     const pdf = new Uint8Array(await readFile(capture));
-    const text = spawnSync("pdftotext", ["-", "-"], { input: Buffer.from(pdf), encoding: "utf8" }).stdout;
+    const text = pdfText(pdf);
     expect(text).toContain("original_line");
     expect(text).not.toContain("edited_after_prompt");
   });

@@ -73,10 +73,21 @@ jobs:
       - run: bun install --frozen-lockfile
 
       - name: Typecheck, unit tests, and packaging tests
+        if: matrix.target != 'windows-x64'
         shell: bash
         run: |
           bun run check
           bun test
+          python3 -m unittest discover -s tests -p "package_test.py"
+
+      # Native Windows tests cover portable input, configuration and PDF layout.
+      # POSIX fake spoolers and PTYs are exercised by the Unix matrix jobs.
+      - name: Typecheck, unit tests, and packaging tests (Windows)
+        if: matrix.target == 'windows-x64'
+        shell: bash
+        run: |
+          bun run check
+          bun test tests/
           python -m unittest discover -s tests -p "package_test.py"
 
       - name: Package (Linux)
@@ -97,12 +108,20 @@ jobs:
         shell: pwsh
         run: python scripts/package.py --target windows-x64 --sumatra dist/sumatra/SumatraPDF-3.6.1-64.exe
 
-      # shasum is everywhere (also on macOS runners); sha256sum is not.
       - name: Verify packaged checksums
-        shell: bash
         run: |
           cd dist/release
-          grep -E "xprint-.*-${{ matrix.target }}\.zip$" SHA256SUMS | shasum -a 256 -c -
+          python3 -c 'import hashlib, pathlib, sys
+          target = sys.argv[1]
+          archives = sorted(pathlib.Path(".").glob(f"xprint-*-{target}.zip"))
+          assert len(archives) == 1, archives
+          archive = archives[0]
+          digest = hashlib.sha256(archive.read_bytes()).hexdigest()
+          manifest = dict(reversed(line.split()) for line in pathlib.Path("SHA256SUMS").read_text().splitlines())
+          assert manifest[archive.name] == digest, (manifest[archive.name], digest)
+          sidecar = pathlib.Path(str(archive) + ".sha256").read_text().split()
+          assert sidecar == [digest, archive.name], sidecar
+          print(f"ok {digest}  {archive.name}")' "${{ matrix.target }}"
 
       - uses: actions/upload-artifact@v4
         with:
@@ -117,6 +136,8 @@ jobs:
   acceptance:
     name: Playback ${{ matrix.target }}
     needs: build
+    # A failed build for another OS should not hide this platform's queue result.
+    if: ${{ !cancelled() }}
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 30
     strategy:
@@ -147,10 +168,38 @@ jobs:
         run: choco install poppler tesseract --no-progress -y
 
       - name: Verify downloaded checksums
-        shell: bash
         run: |
           cd downloaded
-          grep -E "xprint-.*-${{ matrix.target }}\.zip$" SHA256SUMS | shasum -a 256 -c -
+          python3 -c 'import hashlib, pathlib, sys
+          target = sys.argv[1]
+          archives = sorted(pathlib.Path(".").glob(f"xprint-*-{target}.zip"))
+          assert len(archives) == 1, archives
+          archive = archives[0]
+          digest = hashlib.sha256(archive.read_bytes()).hexdigest()
+          manifest = dict(reversed(line.split()) for line in pathlib.Path("SHA256SUMS").read_text().splitlines())
+          assert manifest[archive.name] == digest, (manifest[archive.name], digest)
+          print(f"ok {digest}  {archive.name}")' "${{ matrix.target }}"
+
+      # The Windows acceptance script changes the default printer, which needs the
+      # Print Spooler service and the Microsoft Print to PDF driver. Both are
+      # expected on GitHub-hosted images; this step starts the service if it is
+      # stopped and prints the real state so a missing prerequisite is a clear
+      # provisioning error rather than an assertion inside acceptance.ps1.
+      - name: Provision Print Spooler and Microsoft Print to PDF (Windows)
+        if: matrix.target == 'windows-x64'
+        shell: pwsh
+        run: |
+          Get-Service Spooler | Format-List Name, Status, StartType
+          if ((Get-Service Spooler).Status -ne 'Running') {
+            Set-Service Spooler -StartupType Automatic
+            Start-Service Spooler
+            (Get-Service Spooler).WaitForStatus('Running', '00:00:30')
+          }
+          Write-Host "Spooler: $((Get-Service Spooler).Status)"
+          Get-PrinterDriver | Select-Object Name, Manufacturer | Format-Table
+          if (-not (Get-PrinterDriver -Name 'Microsoft Print to PDF' -ErrorAction SilentlyContinue)) {
+            throw 'Microsoft Print to PDF driver is not installed on this runner image; the Windows acceptance cannot create its temporary queues.'
+          }
 
       # The host has no matching glob, so the archive name is resolved here and
       # passed explicitly. The container has no network at all; CUPS and the IPP
@@ -231,16 +280,60 @@ jobs:
       - uses: actions/download-artifact@v4
         with:
           pattern: xprint-{linux-x64,macos-arm64,windows-x64}
+          # One directory per artifact keeps each target's own SHA256SUMS, so
+          # they cannot overwrite one another before they have been checked.
           path: verified
-          merge-multiple: true
+          merge-multiple: false
 
-      - name: Verify and merge checksums
+      - name: Verify every archive, sidecar, and per-target manifest, then merge
         run: |
-          cd verified
-          shasum -a 256 -c SHA256SUMS
-          shasum -a 256 xprint-*.zip | sort -k 2 > SHA256SUMS.merged
-          mv SHA256SUMS.merged SHA256SUMS
-          ls -la
+          python3 - <<'EOF'
+          import hashlib, pathlib, shutil, sys
+
+          root = pathlib.Path("verified")
+          merged = []
+          seen = set()
+          for artifact in sorted(root.iterdir()):
+              if not artifact.is_dir():
+                  sys.exit(f"unexpected file outside an artifact directory: {artifact}")
+              archives = sorted(artifact.glob("xprint-*.zip"))
+              if not archives:
+                  sys.exit(f"{artifact} contains no release archive")
+              manifest = dict(reversed(line.split()) for line in (artifact / "SHA256SUMS").read_text().splitlines())
+              for archive in archives:
+                  digest = hashlib.sha256(archive.read_bytes()).hexdigest()
+                  sidecar = pathlib.Path(str(archive) + ".sha256").read_text().split()
+                  if sidecar != [digest, archive.name]:
+                      sys.exit(f"{archive}: sidecar {sidecar} does not match {digest}")
+                  if manifest.get(archive.name) != digest:
+                      sys.exit(f"{archive}: manifest lists {manifest.get(archive.name)}, actual {digest}")
+                  if archive.name in seen:
+                      sys.exit(f"duplicate archive {archive.name}")
+                  seen.add(archive.name)
+                  merged.append(f"{digest}  {archive.name}\n")
+                  print(f"ok {digest}  {archive.name}")
+          # Every target must be present exactly once; evidence artifacts are
+          # never downloaded because the pattern above matches their names only
+          # with an exact "-<target>" suffix.
+          targets = ("linux-x64", "macos-arm64", "windows-x64")
+          missing = [target for target in targets if not any(name.endswith(f"-{target}.zip") for name in seen)]
+          if missing or len(seen) != len(targets):
+              sys.exit(f"missing {missing}; expected one archive per target, found {sorted(seen)}")
+          (root / "SHA256SUMS").write_text("".join(sorted(merged, key=lambda line: line.split()[1])))
+          for artifact in root.iterdir():
+              if artifact.is_dir():
+                  for path in [*artifact.glob("xprint-*.zip"), *artifact.glob("xprint-*.zip.sha256")]:
+                      shutil.move(str(path), root / path.name)
+                  # The per-target manifest was checked above and is replaced by
+                  # the merged one; nothing else may be published unchecked.
+                  leftovers = [path.name for path in artifact.iterdir() if path.name != "SHA256SUMS"]
+                  if leftovers:
+                      sys.exit(f"{artifact} still contains unchecked files: {leftovers}")
+                  shutil.rmtree(artifact)
+          print("merged SHA256SUMS:")
+          print((root / "SHA256SUMS").read_text(), end="")
+          EOF
+          ls -la verified
 
       - uses: actions/upload-artifact@v4
         with:
@@ -252,6 +345,8 @@ jobs:
       - name: Attach to tag
         env:
           GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ github.ref_name }}
         run: |
-          gh release create "${{ github.ref_name }}" --verify-tag --generate-notes \
+          gh release create "$RELEASE_TAG" --verify-tag --generate-notes \
             verified/xprint-*.zip verified/*.zip.sha256 verified/SHA256SUMS

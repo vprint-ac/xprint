@@ -11,6 +11,10 @@ export interface SubmitResult {
   jobId: string | null;
 }
 
+export interface QueueOverrides {
+  lpstat?: string;
+}
+
 export class PrintBackendError extends Error {
   constructor(message: string, readonly uncertain: boolean) {
     super(message);
@@ -18,15 +22,39 @@ export class PrintBackendError extends Error {
   }
 }
 
+function missingToolError(tool: string, reason: string): PrintBackendError {
+  return new PrintBackendError(
+    `找不到 ${tool}（${reason}）。Linux 与 macOS 通过 CUPS 提交打印，请确认已安装 CUPS 客户端工具（lp、lpstat）并已加入 PATH。`,
+    false,
+  );
+}
+
+// Bun.spawn reports a missing executable in two different ways: on macOS it
+// throws ENOENT synchronously, while on Linux it resolves to exit code 127
+// with empty output. A genuine exit 127 from an existing executable is kept as
+// a backend failure, so the 127 check must confirm the tool is actually absent.
+function exitedBecauseMissing(command: string, result: { code: number; stdout: string; stderr: string }) {
+  return result.code === 127 && !result.stdout && !result.stderr && !Bun.which(command);
+}
+
 async function run(command: string, args: string[], input?: Uint8Array, env: Record<string, string> = {}) {
-  const processHandle = Bun.spawn([command, ...args], {
-    stdin: input ?? "ignore", stdout: "pipe", stderr: "pipe",
-    env: { ...process.env, ...env, LC_ALL: "C" },
-  });
-  const [code, stdout, stderr] = await Promise.all([
-    processHandle.exited, processHandle.stdout.text(), processHandle.stderr.text(),
-  ]);
-  return { code, stdout, stderr, signal: processHandle.signalCode };
+  try {
+    const processHandle = Bun.spawn([command, ...args], {
+      stdin: input ?? "ignore", stdout: "pipe", stderr: "pipe",
+      env: { ...process.env, ...env, LC_ALL: "C" },
+    });
+    const [code, stdout, stderr] = await Promise.all([
+      processHandle.exited, processHandle.stdout.text(), processHandle.stderr.text(),
+    ]);
+    if (exitedBecauseMissing(command, { code, stdout, stderr })) throw missingToolError(command, "退出码 127，且 PATH 中找不到该程序");
+    return { code, stdout, stderr, signal: processHandle.signalCode };
+  } catch (error) {
+    if (error instanceof PrintBackendError) throw error;
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+      throw missingToolError(command, (error as Error).message);
+    }
+    throw error;
+  }
 }
 
 export function findDefaultQueue(lpstatOutput: string) {
@@ -36,21 +64,21 @@ export function findDefaultQueue(lpstatOutput: string) {
   return match ? match[1] : null;
 }
 
-export async function listQueues(env: Record<string, string> = {}) {
-  const result = await run("lpstat", ["-e"], undefined, env);
+export async function listQueues(env: Record<string, string> = {}, lpstat = "lpstat") {
+  const result = await run(lpstat, ["-e"], undefined, env);
   if (result.code !== 0) throw new PrintBackendError(`无法查询 CUPS 打印队列：${result.stderr.trim() || `lpstat 退出码 ${result.code}`}`, false);
   return result.stdout.split("\n").map(line => line.trim()).filter(Boolean);
 }
 
-export async function defaultQueue(env: Record<string, string> = {}) {
-  const result = await run("lpstat", ["-d"], undefined, env);
+export async function defaultQueue(env: Record<string, string> = {}, lpstat = "lpstat") {
+  const result = await run(lpstat, ["-d"], undefined, env);
   return result.code === 0 ? findDefaultQueue(result.stdout) : null;
 }
 
-export async function resolveQueue(requested: string | undefined) {
-  const queue = requested || await defaultQueue();
+export async function resolveQueue(requested: string | undefined, overrides: QueueOverrides = {}) {
+  const queue = requested || await defaultQueue({}, overrides.lpstat);
   if (!queue) throw new PrintBackendError("没有系统默认打印队列，请在用户配置中指定 printer。", false);
-  const queues = await listQueues();
+  const queues = await listQueues({}, overrides.lpstat);
   if (!queues.includes(queue)) {
     throw new PrintBackendError(`系统队列「${queue}」不存在，请核对配置。`, false);
   }

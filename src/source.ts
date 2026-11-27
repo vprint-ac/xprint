@@ -4,6 +4,19 @@ import { basename } from "node:path";
 
 export const maxSourceBytes = 16_384;
 
+// Adapted from Hydro/XCPC-TOOLS printer.ts: characters that are not letters,
+// marks, numbers, punctuation, symbols, CR, LF, tab or space are shown as
+// visible escapes so control and bidi characters cannot disappear on paper.
+const printable = /^[\p{L}\p{M}\p{N}\p{P}\p{S}\r\n\t ]$/u;
+
+export function escapeSourceText(text: string) {
+  let escaped = "";
+  for (const character of text) {
+    escaped += printable.test(character) ? character : `U+${character.codePointAt(0)!.toString(16).toUpperCase()}`;
+  }
+  return escaped;
+}
+
 export interface SourceSnapshot {
   filename: string;
   bytes: Uint8Array;
@@ -21,10 +34,15 @@ export function decodeSourceText(bytes: Uint8Array) {
   }
   let text: string;
   try {
-    text = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(bytes);
+    // A leading BOM is part of the byte count but is not source content, so it
+    // is dropped from the decoded text instead of being printed as U+FEFF.
+    text = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
   } catch {
     throw new Error("仅支持 UTF-8 纯文本。");
   }
+  // C0 control characters (other than tab and line breaks) still mean binary
+  // input. Everything else is kept and shown as a visible escape by
+  // escapeSourceText, matching Hydro/XCPC-TOOLS.
   if (/[\u0000-\u0008\u000e-\u001f\u007f]/u.test(text)) throw new Error("仅支持 UTF-8 纯文本。");
   return text;
 }

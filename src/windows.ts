@@ -14,6 +14,11 @@ const LIST_QUEUES_SCRIPT = POWERSHELL_UTF8 + " Get-Printer | Select-Object -Expa
 
 const DEFAULT_QUEUE_SCRIPT = POWERSHELL_UTF8 + " (Get-CimInstance Win32_Printer | Where-Object Default).Name";
 
+// Windows limits each path component to 255 UTF-16 code units. Keeping the
+// spool file's name close to the source name makes the job recognizable in the
+// print queue without risking a failed SumatraPDF launch.
+const maxSpoolFilenameLength = 255;
+
 export interface WindowsSubmitOptions {
   sumatra?: string;
   queue: string;
@@ -38,11 +43,27 @@ function detail(result: { code: number; stdout: string; stderr: string }) {
   return (result.stderr || result.stdout).trim() || `退出码 ${result.code}`;
 }
 
+function missingToolError(tool: string, reason: string): PrintBackendError {
+  return new PrintBackendError(
+    `找不到 ${tool}（${reason}）。请确认它已安装或在 PATH 中，或检查发行包是否完整。`,
+    false,
+  );
+}
+
+// Node's spawn emits an ENOENT error event on Windows and macOS. On Linux it
+// can instead resolve with exit code 127 and no output, so confirm the tool is
+// really absent before calling it missing; a genuine 127 from an existing
+// executable stays a backend failure.
+function exitedBecauseMissing(command: string, result: { code: number; stdout: string; stderr: string }) {
+  return result.code === 127 && !result.stdout && !result.stderr && !Bun.which(command);
+}
+
 function run(command: string, args: string[], env: Record<string, string> = {}) {
   return new Promise<{ code: number; stdout: string; stderr: string }>((resolve, reject) => {
     const child = spawn(command, args, {
       stdio: ["ignore", "pipe", "pipe"],
       env: { ...process.env, ...env },
+      windowsHide: true,
     });
     const stdoutChunks: Buffer[] = [];
     const stderrChunks: Buffer[] = [];
@@ -51,12 +72,22 @@ function run(command: string, args: string[], env: Record<string, string> = {}) 
     // corrupt queue names that contain Chinese.
     child.stdout.on("data", chunk => { stdoutChunks.push(chunk); });
     child.stderr.on("data", chunk => { stderrChunks.push(chunk); });
-    child.once("error", reject);
-    child.once("close", code => resolve({
-      code: code ?? -1,
-      stdout: Buffer.concat(stdoutChunks).toString("utf8"),
-      stderr: Buffer.concat(stderrChunks).toString("utf8"),
-    }));
+    child.once("error", (error: NodeJS.ErrnoException) => {
+      if (error.code === "ENOENT") reject(missingToolError(command, error.message));
+      else reject(error);
+    });
+    child.once("close", code => {
+      const result = {
+        code: code ?? -1,
+        stdout: Buffer.concat(stdoutChunks).toString("utf8"),
+        stderr: Buffer.concat(stderrChunks).toString("utf8"),
+      };
+      if (exitedBecauseMissing(command, result)) {
+        reject(missingToolError(command, "退出码 127，且 PATH 中找不到该程序"));
+        return;
+      }
+      resolve(result);
+    });
   });
 }
 
@@ -89,16 +120,6 @@ export async function defaultQueue(env: Record<string, string> = {}, powershell:
   return parsePrinterNames(result.stdout)[0];
 }
 
-export async function resolveQueue(requested: string | undefined, overrides: WindowsBackendOptions = {}) {
-  const queue = requested || await defaultQueue({}, overrides.powershell);
-  if (!queue) throw new PrintBackendError("没有系统默认打印队列，请在用户配置中指定 printer。", false);
-  const queues = await listQueues({}, overrides.powershell);
-  if (!queues.includes(queue)) {
-    throw new PrintBackendError(`系统队列「${queue}」不存在，请核对配置。`, false);
-  }
-  return queue;
-}
-
 export function sumatraArguments(options: WindowsSubmitOptions) {
   // "1x" makes SumatraPDF set dmCopies=1 and the DM_COPIES flag. Without it the
   // driver's own default (which may be more than one copy) is left in place.
@@ -109,9 +130,18 @@ export function sumatraArguments(options: WindowsSubmitOptions) {
   ];
 }
 
+export function spoolFilename(title: string) {
+  // Windows silently strips trailing dots and spaces, and refuses the legacy
+  // device names (CON, NUL, COM1, ...) even with an extension.
+  const base = title.replace(/[<>:"/\\|?*\u0000-\u001f]/gu, "_").replace(/[. ]+$/u, "");
+  const stem = base.replace(/\.pdf$/iu, "") || "printout";
+  const safeStem = /^(?:con|prn|aux|nul|com[1-9]|lpt[1-9])$/iu.test(stem) ? `_${stem}` : stem;
+  return `${safeStem.slice(0, maxSpoolFilenameLength - 4)}.pdf`;
+}
+
 export async function submitPdf(options: WindowsSubmitOptions): Promise<SubmitResult> {
   const dir = await mkdtemp(join(tmpdir(), "xprint-"));
-  const pdfPath = join(dir, "printout.pdf");
+  const pdfPath = join(dir, spoolFilename(options.title));
   try {
     await writeFile(pdfPath, options.pdf);
     const args = [...sumatraArguments(options), pdfPath];
@@ -125,6 +155,10 @@ export async function submitPdf(options: WindowsSubmitOptions): Promise<SubmitRe
     }
     return { jobId: null };
   } finally {
-    await rm(dir, { recursive: true, force: true });
+    // A spooler or antivirus may hold the PDF open briefly after SumatraPDF
+    // exits. Cleanup is best effort and must never change the submit outcome.
+    await rm(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }).catch((error: Error) => {
+      process.emitWarning(`打印临时文件「${dir}」未能清理，系统可稍后自动删除。${error.message}`, { code: "XPRINT_TMP_CLEANUP" });
+    });
   }
 }

@@ -1,5 +1,7 @@
-// generateTypst and BWTmTheme are adapted from Hydro/XCPC-TOOLS
+// generateTypst and BWTmTheme are adapted from Hydro/XCPC-TOOLS typst.ts, and
+// escapeSourceText in src/source.ts follows its printer.ts escapeText.
 // https://github.com/hydro-dev/xcpc-tools/blob/b4faf1f11adb9b1f92db6fbfc55d2de833264a3f/packages/server/client/typst.ts
+// https://github.com/hydro-dev/xcpc-tools/blob/b4faf1f11adb9b1f92db6fbfc55d2de833264a3f/packages/server/client/printer.ts
 // The upstream TypstCompilerDriver is forked from typst.ts (Apache-2.0):
 // https://github.com/Myriad-Dreamin/typst.ts/blob/main/packages/typst.ts/src/compiler.mts
 // xprint only reuses the document template and the black-and-white theme.

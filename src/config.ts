@@ -13,6 +13,8 @@ export interface PrintConfig {
 
 const stringFields = ["printer", "team", "contest", "location"] as const;
 
+type Environment = Record<string, string | undefined>;
+
 export class ConfigError extends Error {
   constructor(message: string) {
     super(message);
@@ -20,11 +22,14 @@ export class ConfigError extends Error {
   }
 }
 
-export function userConfigPath(home: string = homedir()) {
+// The whole environment is read here so a caller (or test) that passes an
+// isolated environment cannot fall back to the developer's real configuration.
+export function userConfigPath(env: Environment = process.env) {
+  const home = env.HOME ?? homedir();
   if (platform() === "darwin") return join(home, "Library", "Application Support", "xprint", "config.yaml");
-  if (platform() === "win32") return join(process.env.LOCALAPPDATA ?? join(home, "AppData", "Local"), "xprint", "config.yaml");
+  if (platform() === "win32") return join(env.LOCALAPPDATA ?? join(home, "AppData", "Local"), "xprint", "config.yaml");
   // XDG_CONFIG_HOME must be an absolute path; a relative one is ignored by the spec.
-  const xdg = process.env.XDG_CONFIG_HOME;
+  const xdg = env.XDG_CONFIG_HOME;
   return join(xdg && isAbsolute(xdg) ? xdg : join(home, ".config"), "xprint", "config.yaml");
 }
 
@@ -33,6 +38,9 @@ export function userConfigPath(home: string = homedir()) {
 async function optionalFile(path: string): Promise<boolean> {
   const info = await stat(path).catch((error: NodeJS.ErrnoException) => {
     if (error.code === "ENOENT") return null;
+    if (error.code === "ENOTDIR") {
+      throw new ConfigError(`配置文件「${path}」无法访问：它的上级路径不是目录。`);
+    }
     throw error;
   });
   if (info === null) return false;
@@ -99,9 +107,9 @@ async function parseFile(path: string): Promise<PrintConfig> {
   return config;
 }
 
-export async function loadConfig(cwd: string, env: Record<string, string | undefined> = process.env): Promise<PrintConfig> {
+export async function loadConfig(cwd: string, env: Environment = process.env): Promise<PrintConfig> {
   let merged: PrintConfig = {};
-  const userPath = userConfigPath(env.HOME);
+  const userPath = userConfigPath(env);
   if (await optionalFile(userPath)) merged = { ...merged, ...(await parseFile(userPath)) };
   const contestPath = await findContestConfig(cwd);
   if (contestPath) merged = { ...merged, ...(await parseFile(contestPath)) };

@@ -3,7 +3,10 @@ import { createHash } from "node:crypto";
 import { mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import wasmUrl from "@myriaddreamin/typst-ts-web-compiler/pkg/typst_ts_web_compiler_bg.wasm" with { type: "file" };
+import monoUrl from "dejavu-fonts-ttf/ttf/DejaVuSansMono.ttf" with { type: "file" };
 import { layoutPrintout, languageForFilename, type LayoutInput } from "../src/layout.ts";
+import { pdfInfo, pdfText } from "./support/poppler.ts";
 
 // `bun test` forces UTC, while the Hydro reference PDF was rendered in
 // Asia/Shanghai. Pin the zone so the header time matches the reference.
@@ -12,16 +15,6 @@ process.env.TZ = "Asia/Shanghai";
 const fixedTime = new Date(2026, 10, 27, 14, 32, 8);
 const referenceTimestamp = 1795761128000;
 const fixtures = new URL("./fixtures/", import.meta.url);
-
-function pdfText(bytes: Uint8Array, firstPage?: number, lastPage?: number) {
-  const args = ["pdftotext", "-layout"];
-  if (firstPage) args.push("-f", String(firstPage), "-l", String(lastPage));
-  return Bun.spawnSync([...args, "-", "-"], { stdin: Buffer.from(bytes) }).stdout.toString();
-}
-
-function pdfInfo(bytes: Uint8Array) {
-  return Bun.spawnSync(["pdfinfo", "-"], { stdin: Buffer.from(bytes) }).stdout.toString();
-}
 
 async function fixture(name: string) {
   return Bun.file(new URL(name, fixtures)).bytes();
@@ -47,6 +40,22 @@ describe("languageForFilename", () => {
     expect(languageForFilename("main.py")).toBe("python");
     expect(languageForFilename("notes.unknownext")).toBe("");
     expect(languageForFilename("noextension")).toBe("");
+  });
+});
+
+describe("Typst failure reporting", () => {
+  test("a source error surfaces the compiler diagnostics instead of a raw debug string", async () => {
+    const mod = await import("@myriaddreamin/typst-ts-web-compiler/pkg/typst_ts_web_compiler.mjs");
+    mod.initSync({ module: new Uint8Array(await Bun.file(wasmUrl).bytes()) });
+    const builder = new mod.TypstCompilerBuilder();
+    await builder.add_raw_font(new Uint8Array(await Bun.file(monoUrl).bytes()));
+    const instance = await builder.build();
+    instance.add_source("/XCPCTOOLS/BW.tmtheme", "");
+    instance.add_source("/main.typst", '#raw(read("/source"), block: true, theme: "/XCPCTOOLS/BW.tmtheme")');
+    instance.add_source("/source", "int main(){}\n");
+    const output = instance.compile("/main.typst", [], "pdf", 2) as { hasError?: boolean; diagnostics?: string[] };
+    expect(output.hasError).toBe(true);
+    expect(output.diagnostics?.join("\n")).toMatch(/error:/);
   });
 });
 

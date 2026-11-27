@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { maxSourceBytes, readSource } from "../src/source.ts";
+import { decodeSourceText, escapeSourceText, maxSourceBytes, readSource } from "../src/source.ts";
 
 async function fixture() {
   const dir = await mkdtemp(join(tmpdir(), "xprint-source-"));
@@ -22,7 +22,8 @@ describe("readSource", () => {
     const path = await put("A.cpp", bytes);
     const source = await readSource(path);
     expect(source.bytes.byteLength).toBe(maxSourceBytes);
-    expect(source.text.startsWith("\uFEFF// 中文\r\n")).toBe(true);
+    // The BOM still counts toward the byte limit but is not printed.
+    expect(source.text.startsWith("// 中文\r\n")).toBe(true);
   });
 
   test("rejects 16,385 bytes with the actual size before any layout", async () => {
@@ -51,6 +52,15 @@ describe("readSource", () => {
     await expect(readSource(bad)).rejects.toThrow(/UTF-8/);
     const nul = await put("nul.txt", Uint8Array.from([0x61, 0x00, 0x62]));
     await expect(readSource(nul)).rejects.toThrow(/UTF-8/);
+  });
+
+  test("bidi, C1 and line separator characters are escaped visibly instead of rejected", () => {
+    expect(escapeSourceText("// a\u202Eb\n")).toBe("// aU+202Eb\n");
+    expect(escapeSourceText("x\u0085y")).toBe("xU+85y");
+    expect(escapeSourceText("a\u2028b")).toBe("aU+2028b");
+    // Chinese, tab, CR and LF are content and must survive unchanged.
+    expect(escapeSourceText("// 中文\t\r\n")).toBe("// 中文\t\r\n");
+    expect(decodeSourceText(new TextEncoder().encode("// \u202E\n"))).toBe("// \u202E\n");
   });
 
   test("returns the filename alongside the snapshot", async () => {

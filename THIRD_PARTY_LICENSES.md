@@ -14,7 +14,7 @@ xprint 的发行物内嵌以下组件。许可证全文见 `licenses/` 目录。
 
 ## Windows 便携组件
 
-SumatraPDF 3.6.1 仅随 Windows x64 发行包分发，压缩包内只有一个可执行文件，与 xprint.exe 一起解压使用。版本、下载地址、项目自行固定的 SHA256、Authenticode 签名者与对应源码 tag 见 [windows/README.md](windows/README.md)。GPL-3.0 全文见 `licenses/sumatrapdf-GPL-3.0.txt`，对应源码为 GitHub tag [`3.6.1rel`](https://github.com/sumatrapdfreader/sumatrapdf/releases/tag/3.6.1rel)。
+Windows x64 发行包将上游便携版中的 SumatraPDF 3.6.1 可执行文件放在 `xprint.exe` 旁。版本、下载地址、项目自行固定的 SHA256、Authenticode 签名者与对应源码 tag 见 [windows/README.md](windows/README.md)。GPL-3.0 全文见 `licenses/sumatrapdf-GPL-3.0.txt`，对应源码为 GitHub tag [`3.6.1rel`](https://github.com/sumatrapdfreader/sumatrapdf/releases/tag/3.6.1rel)。
 
 ## 说明
 

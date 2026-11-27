@@ -37,15 +37,21 @@ function Invoke-Tool {
 function Invoke-Xprint {
   param([string]$Directory, [string[]]$Arguments)
   Push-Location $Directory
+  $originalPath = $env:Path
   try {
+    # Keep only the OS printing tools on the CLI's PATH. Poppler and OCR are
+    # separate checks performed by the harness after restoring the caller PATH.
+    $env:Path = "$env:SystemRoot\System32;$env:SystemRoot;$env:SystemRoot\System32\Wbem;$env:SystemRoot\System32\WindowsPowerShell\v1.0"
+    if ((Get-Command bun,typst -ErrorAction SilentlyContinue)) { throw 'Unexpected runtime in isolated PATH' }
     return Invoke-Tool -File $script:Xprint -Arguments $Arguments
   } finally {
+    $env:Path = $originalPath
     Pop-Location
   }
 }
 
 function New-ContestDirectory {
-  param([string]$Name, [string]$Printer, [string]$Source)
+  param([string]$Name, [string]$Printer, [string]$Source, [string]$Config)
   $directory = Join-Path $WorkDir $Name
   New-Item -ItemType Directory -Force -Path $directory | Out-Null
   if ($Source) {
@@ -61,7 +67,9 @@ function New-ContestDirectory {
       '}'
     )
   }
-  if ($Printer) {
+  if ($Config) {
+    Set-Content -LiteralPath (Join-Path $directory '.xprint.yaml') -Encoding UTF8 -Value $Config
+  } elseif ($Printer) {
     Set-Content -LiteralPath (Join-Path $directory '.xprint.yaml') -Encoding UTF8 -Value "printer: `"$Printer`""
   }
   return $directory
@@ -128,7 +136,7 @@ $Sumatra = Join-Path (Split-Path $Xprint) $manifest.exe
 $layoutFixture = Join-Path $PSScriptRoot '..\tests\fixtures\layout.cpp'
 New-Item -ItemType Directory -Force -Path $WorkDir | Out-Null
 
-Assert-That $IsWindows 'running on Windows'
+Assert-That ([System.Environment]::OSVersion.Platform -eq 'Win32NT') 'running on Windows'
 Assert-That ($env:GITHUB_ACTIONS -eq 'true' -and $env:RUNNER_ENVIRONMENT -eq 'github-hosted') `
   'refusing to change the default printer outside a GitHub-hosted CI runner'
 Assert-That ((Get-Service Spooler).Status -eq 'Running') 'Print Spooler service is running'
@@ -196,8 +204,12 @@ try {
   Assert-That ($defaultResult.ExitCode -eq 0) "default queue submission exits 0 (got $($defaultResult.ExitCode))"
   Assert-That ($defaultResult.Output -match '已提交到') 'xprint reports that the job was submitted'
   Assert-That ($defaultResult.Output -match [regex]::Escape($defaultQueueName)) "xprint resolved the temporary queue $defaultQueueName"
+  Assert-That ($defaultResult.Output -match '（黑白）') 'the default queue job is requested in monochrome'
   Wait-ForFile $outputPdf
   Assert-PdfOutput -Path $outputPdf -ExpectedPages 7 -Marker $lastLineMarker -EvidencePrefix (Join-Path $WorkDir "evidence-$token")
+  # The default job is finished. Later submissions must write their own spool
+  # file and leave this one untouched.
+  $defaultOutputHash = (Get-FileHash $outputPdf -Algorithm SHA256).Hash
 
   $missingSource = Invoke-Xprint -Directory $WorkDir -Arguments @('-y', 'missing-source.cpp')
   Assert-That ($missingSource.ExitCode -ne 0) 'a missing source file exits non-zero'
@@ -210,13 +222,22 @@ try {
   Assert-That ($missingQueueResult.Output -match 'Print Spooler|不存在') 'the missing queue error is actionable'
   Assert-That (-not (Test-Path -LiteralPath $outputPdfChinese)) 'no job reached the virtual printer for the missing queue case'
 
-  $chineseDirectory = New-ContestDirectory -Name 'chinese-queue' -Printer $chineseQueueName -Source $layoutSource
-  $chineseResult = Invoke-Xprint -Directory $chineseDirectory -Arguments @('-y', 'layout.cpp')
+  # The queue is set at the contest root; the color request is inherited from a
+  # question subdirectory, so this also exercises the nearest-config lookup.
+  $chineseRoot = New-ContestDirectory -Name 'chinese-queue' -Printer $chineseQueueName
+  $chineseQuestion = Join-Path $chineseRoot 'question-1'
+  New-Item -ItemType Directory -Force -Path $chineseQuestion | Out-Null
+  Copy-Item -LiteralPath $layoutSource -Destination (Join-Path $chineseQuestion 'layout.cpp')
+  Set-Content -LiteralPath (Join-Path $chineseQuestion '.xprint.yaml') -Encoding UTF8 -Value 'color: color'
+  $chineseResult = Invoke-Xprint -Directory $chineseQuestion -Arguments @('-y', 'layout.cpp')
   Write-Host $chineseResult.Output
   Assert-That ($chineseResult.ExitCode -eq 0) "Chinese queue submission exits 0 (got $($chineseResult.ExitCode))"
   Assert-That ($chineseResult.Output -match '已提交到') 'the Chinese queue submission reports success'
+  Assert-That ($chineseResult.Output -match [regex]::Escape($chineseQueueName)) "the receipt names the Chinese queue $chineseQueueName"
+  Assert-That ($chineseResult.Output -match '（彩色）') 'the inherited contest config requests color'
   Wait-ForFile $outputPdfChinese
   Assert-PdfOutput -Path $outputPdfChinese -ExpectedPages 7 -Marker $lastLineMarker -EvidencePrefix (Join-Path $WorkDir "evidence-$token-chinese")
+  Assert-That ((Get-FileHash $outputPdf -Algorithm SHA256).Hash -eq $defaultOutputHash) 'the default queue spool file is unchanged after the Chinese queue job'
 
   Write-Host ''
   Write-Host 'ACCEPTANCE PASSED'

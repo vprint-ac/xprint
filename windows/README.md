@@ -38,7 +38,9 @@ SumatraPDF 3.6.1 只用退出码 0 表示已交给打印系统，非 0 表示失
 
 枚举队列和读取默认队列通过 `powershell.exe -NoProfile -NonInteractive -Command` 执行固定脚本，脚本内容不随用户输入变化，配置中的队列名只在 Node 侧与枚举结果做精确比较。脚本开头显式设置 `[Console]::OutputEncoding = [System.Text.Encoding]::UTF8`，否则 Windows PowerShell 5.1 在 stdout 被重定向时会用系统代码页输出，中文队列名会损坏。
 
-子进程的 stdout/stderr 先按字节收集，进程退出后整体按 UTF-8 解码，避免中文队列名被管道分块切开。查询失败时错误信息带上 PowerShell 退出码与原始输出，并提示检查 Print Spooler 服务或在配置中显式指定 `printer`。
+子进程的 stdout/stderr 先按字节收集，进程退出后整体按 UTF-8 解码，避免中文队列名被管道分块切开。PowerShell 和 SumatraPDF 以 `windowsHide` 启动，不弹出控制台窗口。找不到 `powershell.exe` 或随包的 SumatraPDF 时，错误信息会指出缺失的路径并提示检查安装或发行包是否完整。查询失败时错误信息带上 PowerShell 退出码与原始输出，并提示检查 Print Spooler 服务或在配置中显式指定 `printer`。
+
+交给 SumatraPDF 的临时 PDF 以源文件名命名（例如 `A.cpp.pdf`），方便在系统队列中辨认作业。Windows 单个路径分量上限为 255 个 UTF-16 代码单元，过长的名字会截断后保留 `.pdf` 后缀；非法字符替换为 `_`，`CON`、`NUL` 等保留名加前缀 `_`。打印结束后临时目录尽力删除，删除失败只发出中文警告，不影响已经接受的作业结果。
 
 ## 验收脚本
 
@@ -48,7 +50,9 @@ SumatraPDF 3.6.1 只用退出码 0 表示已交给打印系统，非 0 表示失
 2. `pdftoppm` 把末页渲染成 200 dpi PNG，`tesseract -l eng --psm 6` 识别后断言包含该标记。
 3. 首页另存 96 dpi PNG 作为证据，与虚拟队列收到的 PDF 一起保留在 `-WorkDir`。
 
-脚本创建两个唯一命名的临时队列（名称含中文）和指向输出 PDF 的本地端口，把其中一个设为系统默认打印机并读回验证，再分别验证默认队列提交与显式中文队列提交。`finally` 里先恢复原默认打印机并读回，再只删除本次创建的队列与端口，并断言运行前的队列集合完整、默认打印机与运行前一致。恢复失败时保留临时队列，避免 Windows 静默换默认。脚本只在 `GITHUB_ACTIONS=true` 且 `RUNNER_ENVIRONMENT=github-hosted` 的 GitHub 托管 runner 上运行，因为它会临时改动系统默认打印机。
+脚本创建两个唯一命名的临时队列（名称含中文）和指向输出 PDF 的本地端口，把其中一个设为系统默认打印机并读回验证，再分别验证默认队列提交与显式中文队列提交。默认队列作业断言摘要为黑白；中文队列作业从题目子目录运行，队列名来自比赛根目录配置、`color: color` 来自子目录配置，断言摘要显示彩色并包含队列名。中文队列作业完成后再次核对默认队列的输出文件哈希，确认它未被后续作业改写。`finally` 里先恢复原默认打印机并读回，再只删除本次创建的队列与端口，并断言运行前的队列集合完整、默认打印机与运行前一致。恢复失败时保留临时队列，避免 Windows 静默换默认。脚本只在 `GITHUB_ACTIONS=true` 且 `RUNNER_ENVIRONMENT=github-hosted` 的 GitHub 托管 runner 上运行，因为它会临时改动系统默认打印机。
+
+彩色断言检查的是摘要里的打印颜色请求。Microsoft Print to PDF 可能把页面渲染成灰度位图，因此脚本不从输出图像推断颜色模式；如需验证纸面颜色，应在支持彩色的实体打印机上进行。
 
 CI 前置条件（这些都不是 xprint CLI 的依赖）：
 
@@ -64,4 +68,3 @@ CI 前置条件（这些都不是 xprint CLI 的依赖）：
 ```console
 > pwsh -File windows/acceptance.ps1 -Xprint dist/xprint.exe -WorkDir out/acceptance
 ```
-
